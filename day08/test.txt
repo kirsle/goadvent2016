@@ -1,0 +1,4 @@
+rect 3x2
+rect 6x3
+rotate column x=3 by 3
+rotate row y=1 by 4
