@@ -1,0 +1,202 @@
+package main
+
+// Over-engineered code that worked with the V1 algorithm but exploded when
+// updating it to V2. Went with the simpler solution in the new main.go instead.
+
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/kirsle/goadvent2016/advent"
+)
+
+const RecursionLimit = 100
+
+// Type Marker has details of a parsed marker.
+type Marker struct {
+	Text   string // The text of the marker code itself
+	Data   []byte // The data globbed up after the marker code
+	Length int    // The length of the data to glob up
+	Repeat int    // How many times to repeat the data
+}
+
+// Type DecodedString contains the decoded message.
+type DecodedString struct {
+	strings        []string
+	inMarker       bool
+	recursionCount int
+}
+
+var MarkerRegexp *regexp.Regexp = regexp.MustCompile(`\((\d+?)x(\d+?)\)$`)
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: main.go <input file>")
+		os.Exit(1)
+	}
+
+	var (
+		input   []byte
+		decoded DecodedString
+		err     error
+	)
+
+	input, err = ioutil.ReadFile(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+
+	decoder := NewDecoder()
+	err = decoder.Decompress(strings.TrimSpace(string(input)))
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Decoded output: %s\nLength: %d\n", advent.Truncate(decoded.String(), 255), decoded.Len())
+}
+
+// NewDecoder creates a new DecodedString to begin decompressing.
+func NewDecoder() *DecodedString {
+	return &DecodedString{}
+}
+
+// Decompress implements the decompression algorithm.
+func (r *DecodedString) Decompress(input string) error {
+	var err error
+
+	fmt.Printf("Rec Count: %d\n", r.recursionCount)
+
+	// Safely prevent infinite recursion.
+	if r.recursionCount > RecursionLimit {
+		return fmt.Errorf("deep recursion detected: %d", RecursionLimit)
+	}
+
+	// Tracking the state of markers.
+	var marker *Marker
+
+	advent.Debug("### INPUT STRING: %s ###\n", advent.Truncate(input, 255))
+
+	for idx := 0; idx < len(input); idx++ {
+		time.Sleep(1)
+		char := input[idx]
+		advent.Debug("[%d] %s\n", idx, string(char))
+
+		if char == '(' && !r.inMarker {
+			// We're not in a marker and we found the start of a marker.
+			marker, err = processMarker(input, idx)
+			if err != nil {
+				return fmt.Errorf("Error at index %d: %s", idx, err)
+			}
+			r.inMarker = true
+			idx += len(marker.Text) - 1
+
+			advent.Debug("Found opening marker: %s -- skip ahead %d\n", marker.Text, len(marker.Text))
+			continue
+		} else if r.inMarker {
+			// We're currently in a marker, glob everything up until it's full.
+			if !marker.Full() {
+				marker.Append(byte(char))
+
+				// Did this complete the marker?
+				if marker.Full() {
+					err = r.ExpandMarker(marker)
+					if err != nil {
+						return fmt.Errorf("Error expanding marker near index %d: %s", idx, err)
+					}
+				}
+			}
+		} else {
+			// Otherwise glob in all characters that aren't spaces.
+			r.Append(byte(char))
+		}
+	}
+
+	advent.Debug("--- OUTPUT: %s\n", advent.Truncate(r.String(), 255))
+
+	return nil
+}
+
+// processMarker peeks ahead to find the marker and parses it.
+func processMarker(input string, idx int) (*Marker, error) {
+	var buf []byte
+
+	// Peek ahead until we find the closing paren.
+	for i := idx; i < len(input); i++ {
+		buf = append(buf, input[i])
+		if input[i] == ')' {
+			break
+		}
+	}
+	marker := string(buf)
+
+	// Parse it.
+	match := MarkerRegexp.FindStringSubmatch(marker)
+	if len(match) == 0 {
+		return nil, fmt.Errorf("marker '%s' failed regexp check", marker)
+	}
+
+	// The regexp ensures that all the numbers work.
+	values, _ := advent.StringsToInts(match[1:])
+
+	return &Marker{
+		Text:   marker,
+		Length: values[0],
+		Repeat: values[1],
+	}, nil
+}
+
+// Append adds a data character to the marker.
+func (m *Marker) Append(char byte) {
+	m.Data = append(m.Data, char)
+}
+
+// Full tells you whether the marker has read enough characters.
+func (m *Marker) Full() bool {
+	return len(m.Data) >= m.Length
+}
+
+// Append adds a literal character to the decoded output.
+func (r *DecodedString) Append(char byte) {
+	if char != ' ' {
+		r.strings = append(r.strings, string(char))
+	}
+}
+
+// ExpandMarker expands the data of the Marker by Repeat times and adds them to
+// the result string buffer.
+func (r *DecodedString) ExpandMarker(marker *Marker) error {
+	expanded := string(marker.Data)
+
+	// Does the marker contain more compressed parts? Recursively decode them.
+	if strings.Index(expanded, "(") > -1 {
+		recurse := NewDecoder()
+		recurse.recursionCount = r.recursionCount + 1
+		err := recurse.Decompress(expanded)
+		if err != nil {
+			return err
+		}
+		expanded = recurse.String()
+	}
+
+	advent.Debug("Expand '%s' %d times\n", advent.Truncate(expanded, 255), marker.Repeat)
+	for i := 0; i < marker.Repeat; i++ {
+		r.strings = append(r.strings, expanded)
+	}
+	r.inMarker = false
+
+	return nil
+}
+
+// String satisfies the string interface for the decoded result.
+func (r *DecodedString) String() string {
+	return strings.Join(r.strings, "")
+}
+
+// Len returns the length of the decoded string.
+func (r *DecodedString) Len() int {
+	return len(r.String())
+}
